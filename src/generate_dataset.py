@@ -62,7 +62,7 @@ def generate_requests(n_requests: int, horizon_hours: int, start_time: datetime,
 
     rows = []
 
-    priority = list(PRIORITY_WEIGHTS.keys())
+    priorities = list(PRIORITY_WEIGHTS.keys())
     weights = list(PRIORITY_WEIGHTS.values())
 
     for i in range(n_requests):
@@ -252,3 +252,44 @@ def generate_opportunities(satellites: pd.DataFrame, requests: pd.DataFrame, hor
                 candidate_time += timedelta(seconds=period_seconds)
     
     return pd.DataFrame(rows)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate simulated satellite dataset.")
+
+    parser.add_argument("--satellites", type=int, default=12, help="Number of satellites to generate.")
+    parser.add_argument("--requests", type=int, default=500, help="Number of requests to generate.")
+    parser.add_argument("--horizon_hours", type=int, default=48, help="Planning horizon in hours.")
+    parser.add_argument("--orbit_period_minutes", type=float, default=96.0, help="Average orbit period in minutes.")
+    parser.add_argument("--max_windows_per_pair", type=int, default=3, help="Maximum visibility windows per satellite-request pair.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+    parser.add_argument("--output_dir", type=str, default=Path("data/processed"), help="Output directory for generated parquet files.")
+
+    args = parser.parse_args()
+
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    start_time = datetime.now(timezone.utc).replace(microsecond=0, second=0, minute=0)  # Round down to the nearest hour.
+
+    satellites = generate_satellites(n_satellites=args.satellites, orbit_period_minutes=args.orbit_period_minutes, seed=args.seed,)
+    requests = generate_requests(n_requests=args.requests, horizon_hours=args.horizon_hours, start_time=start_time, seed=args.seed,)
+    opportunities = generate_opportunities(satellites=satellites, requests=requests, horizon_hours=args.horizon_hours, max_windows_per_pair=args.max_windows_per_pair, seed=args.seed,)
+
+    satellites.to_parquet(args.output_dir / "satellites.parquet", index=False,)
+    requests.to_parquet(args.output_dir / "requests.parquet", index=False,)
+    opportunities.to_parquet(args.output_dir / "opportunities.parquet", index=False,)
+
+    print("Dataset generated successfully")
+    print(f"Satellites: {len(satellites)}")
+    print(f"Requests: {len(requests)}")
+    print(f"Opportunities: {len(opportunities)}")
+    print(f"Output directory: {args.output_dir.resolve()}") # Print the absolute path of the output directory.
+
+    print("\nFiles:")
+    print(f"- {args.output_dir / 'satellites.parquet'}")
+    print(f"- {args.output_dir / 'requests.parquet'}")
+    print(f"- {args.output_dir / 'opportunities.parquet'}")
+
+
+if __name__ == "__main__":
+    main()

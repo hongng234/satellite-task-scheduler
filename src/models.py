@@ -68,7 +68,7 @@ class ScheduledObservation(BaseModel):
     priority: Priority
 
 
-class Schedule(BaseModel):
+class ScheduleResult(BaseModel):
     status: str
     objective_value: float
     runtime_seconds: float

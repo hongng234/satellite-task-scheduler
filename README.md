@@ -1,13 +1,3 @@
-<!--
-  [Ghi chú tiếng Việt — xoá sau khi đọc]
-  - README là "trang chủ" của repo: người khác (nhà tuyển dụng, reviewer) mở GitHub sẽ thấy file này đầu tiên.
-  - Cấu trúc: tóm tắt → kết quả → cách chạy → model → kiểm thử/validation → debugging → quá trình phát triển.
-  - Phần "Model" giữ lại ký hiệu bạn viết trước đó (x_i, v_i, e_i, m_i, B_s, M_s, K_s, T_i, [a_i, b_i]) và viết nốt phần ràng buộc.
-  - Phần "Debugging" và "Validation" chỉ ghi những gì ĐÃ làm thật trong project, để khi phỏng vấn bạn giải thích được.
-  - Phần "Development process" nói rõ bạn dùng Claude Code — trung thực, và bạn vẫn phải tự hiểu code.
-    Câu "Design decisions ... are my own" là mình viết thay bạn: chỉ giữ nếu đúng, còn không thì sửa lại cho khớp phần bạn thực sự tự làm.
-  - Số liệu trong bảng lấy từ lần chạy benchmark thật (time limit 30s, 8 threads). Nếu chạy lại trên máy khác, runtime có thể khác một chút.
--->
 
 # Satellite Task Scheduler
 

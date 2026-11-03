@@ -1,8 +1,3 @@
-# [Ghi chú tiếng Việt — xoá sau khi đọc]
-# - Windows chưa có sẵn `make`. Cài một lần bằng:  winget install ezwinports.make   (hoặc: choco install make)
-#   rồi mở lại terminal. Không có make thì chạy trực tiếp các lệnh `python -m ...` trong README.
-# - PYTHON trỏ vào .venv nên không cần activate venv trước khi gọi make.
-# - Gõ `make` (hoặc `make help`) để xem danh sách lệnh.
 
 # Python interpreter inside the virtual environment (path differs between Windows and Linux/macOS).
 ifeq ($(OS),Windows_NT)

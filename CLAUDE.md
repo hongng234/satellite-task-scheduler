@@ -1,15 +1,3 @@
-<!--
-  [Ghi chú tiếng Việt — xoá sau khi đọc]
-  CLAUDE.md là gì?
-  - Đây là file "trí nhớ dự án" cho Claude Code. Mỗi lần bạn mở Claude Code trong thư mục này,
-    Claude tự động đọc file này trước khi làm việc, nên không cần giải thích lại project từ đầu.
-  - Nên ghi: project làm gì, lệnh chạy, cấu trúc code, quy ước (style comment...), những "bẫy" đã gặp.
-  - Không nên ghi: những thứ thay đổi liên tục, hoặc những gì đọc code là thấy ngay.
-  - Khác README: README viết cho NGƯỜI đọc repo, còn CLAUDE.md viết cho Claude (ngắn, đi thẳng vào quy tắc).
-  - Bạn có thể sửa tay bất cứ lúc nào. Giữ ngắn gọn: file càng dài thì Claude càng tốn context.
-  - Lần cập nhật này thêm: lệnh test, cấu trúc tests/, quy tắc "sửa code thì phải chạy pytest",
-    và quy tắc "khi sửa bug thì thêm regression test".
--->
 
 # Satellite Task Scheduler
 

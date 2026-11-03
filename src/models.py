@@ -57,20 +57,35 @@ class Opportunity(BaseModel):
     off_nadir_deg: float #  The angle of deviation between the satellite’s line of sight and the vertical direction, If the off-nadir angle is too large, the satellite may not be able to capture an image, or the image quality may be poor.
     feasible: bool = True   # opportunity can be used or not
 
+    # Same rule as Request: the window must have a positive length.
+    # Formula:
+    #   window_end > window_start
+    @field_validator("window_end")
+    @classmethod
+    def validate_window(cls, v: datetime, info):
+        start = info.data.get("window_start")     # Fields already validated (declared above window_end).
 
+        if start and v <= start:
+            raise ValueError("window_end must be after window_start")
+
+        return v
+
+
+# One capture chosen by a scheduler (one row of the output schedule).
 class ScheduledObservation(BaseModel):
     request_id: str
     satellite_id: str
     opportunity_id: str
-    start: datetime
-    end: datetime
-    value: float
+    start: datetime         # actual capture start (chosen inside the window)
+    end: datetime           # actual capture end = start + duration (slew buffer not included)
+    value: float            # value of the served request
     priority: Priority
 
 
+# Output of every scheduler (CP-SAT, greedy, improved greedy) -> same format, easy to compare.
 class ScheduleResult(BaseModel):
-    status: str
-    objective_value: float
-    runtime_seconds: float
+    status: str                             # OPTIMAL / FEASIBLE / INFEASIBLE / UNKNOWN
+    objective_value: float                  # sum(value) of the scheduled observations
+    runtime_seconds: float                  # wall-clock time of solve()
     scheduled: list[ScheduledObservation]
-    solver_status: str
+    solver_status: str                      # raw status from the solver, or "GREEDY_HEURISTIC"

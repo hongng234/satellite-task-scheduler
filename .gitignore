@@ -5,10 +5,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
-data/raw/
-data/processed/
-output/
-artifacts/
+data/
+notebooks/
 *.parquet
 *.csv
 *.json

@@ -121,4 +121,11 @@ Issues found and how they were diagnosed:
 
 ## Development process
 
-Developed with **Claude Code** (an AI coding agent) as an assistant for planning changes, reviewing logic, suggested hint logic, debugging, writting tests, and the solver. Design decisions, model choices, writing the base codes, and the final review of the results are my own.
+The project idea and the backbone code (dataset generator, Pydantic models, CP-SAT model and baseline greedy) are my own.
+I then used **Claude Code** (an AI coding agent) to fix the code, write tests, audit the schedulers and update the project.
+
+When CP-SAT struggled on large sets of opportunities (objective 0, or 42% below greedy), Claude suggested warm-starting it
+with a solution hint built from the greedy schedule. I decided to adopt it and confirmed it with the benchmark:
+on the large scenario, CP-SAT went from 61 552.92 without the hint to 106 174.31 with it (see [Debugging notes](#debugging-notes)).
+
+I reviewed every change, and every benchmark schedule is verified by an independent constraint checker (`check_schedule`).

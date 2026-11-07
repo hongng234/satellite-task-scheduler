@@ -9,13 +9,13 @@ REGRESSION TESTS
         - an opportunity with a too-short window caused a KeyError,
         - the slew buffer was ignored.
 """
-from __future__ import annotations
+from __future__ import annotations     # Lets type hints use names defined later in the file.
 
-import pytest
+import pytest                           # Test framework: parametrize.
 
-from src.scheduler_cp_sat import SatelliteTaskingScheduler
-from src.scheduler_greedy import GreedyScheduler, ImprovedGreedyScheduler
-from tests.conftest import make_opportunity, make_request, make_satellite
+from src.scheduler_cp_sat import SatelliteTaskingScheduler                 # Code under test.
+from src.scheduler_greedy import GreedyScheduler, ImprovedGreedyScheduler  # Used as a reference: CP-SAT must never be worse.
+from tests.conftest import make_opportunity, make_request, make_satellite  # Helpers for hand-made datasets.
 
 
 def solve(ds, **kwargs):
@@ -25,8 +25,8 @@ def solve(ds, **kwargs):
     Ex:
         solve(ds, slew_buffer_seconds=0)
     """
-    options = dict(time_limit_seconds=10, num_workers=4)
-    options.update(kwargs)
+    options = dict(time_limit_seconds=10, num_workers=4)       # Default test settings.
+    options.update(kwargs)                                      # Keyword arguments given by the test replace the defaults.
     return SatelliteTaskingScheduler(**ds.paths, **options).solve()
 
 

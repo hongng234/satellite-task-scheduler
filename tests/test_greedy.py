@@ -6,14 +6,14 @@ Two levels of tests:
        Fast and precise: if one fails, we know exactly which rule is broken.
     2. Behaviour tests: run the full `solve()` on a tiny hand-made dataset and check the result.
 """
-from __future__ import annotations
+from __future__ import annotations     # Lets type hints use names defined later in the file.
 
-from collections import namedtuple
+from collections import namedtuple      # Tiny read-only record type (see Opp below).
 
-import pytest
+import pytest                           # Test framework: parametrize, raises.
 
-from src.scheduler_greedy import GreedyScheduler, ImprovedGreedyScheduler
-from tests.conftest import at, make_opportunity, make_request, make_satellite
+from src.scheduler_greedy import GreedyScheduler, ImprovedGreedyScheduler         # Code under test.
+from tests.conftest import at, make_opportunity, make_request, make_satellite     # Helpers for hand-made datasets.
 
 # namedtuple = a tiny read-only class with named fields.
 # Opp(window_start=..., window_end=..., duration_seconds=...) behaves like a row of the opportunities

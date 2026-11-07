@@ -1,16 +1,37 @@
-from __future__ import annotations
+from __future__ import annotations     # Lets type hints use names defined later in the file.
 
-import math
-import time
-from collections import defaultdict
-from datetime import timedelta
-from pathlib import Path
+import math                             # ceil() / floor() to round times and amounts to integers.
+import time                             # perf_counter(): precise clock to measure the runtime.
+from collections import defaultdict     # Dict that creates a default value ([], 0, ...) for a missing key.
+from datetime import timedelta          # A duration. Ex: timedelta(seconds=735)
+from pathlib import Path                # File paths that work on Windows and Linux.
 
-import pandas as pd
-from ortools.sat.python import cp_model
+import pandas as pd                     # Tables (DataFrames) read from the Parquet files.
+from ortools.sat.python import cp_model # Google OR-Tools CP-SAT: an exact solver for problems with integer variables.
 
-from src.models import (Priority, ScheduleResult, ScheduledObservation,)
-from src.scheduler_greedy import GreedyScheduler, ImprovedGreedyScheduler
+from src.models import (Priority, ScheduleResult, ScheduledObservation,)   # Shared output format of every scheduler.
+from src.scheduler_greedy import GreedyScheduler, ImprovedGreedyScheduler  # Used to build the warm-start hint.
+
+
+## Key point: this is the EXACT scheduler. Instead of deciding opportunities one by one (greedy),
+## it writes the whole problem as a mathematical model and lets CP-SAT search for the best schedule.
+##
+## The model:
+##   Decision variable per opportunity i:  x_i ∈ {0, 1}   (1 = take this capture, 0 = skip it)
+##   Objective:                           maximize sum(value_i * x_i)
+##   Constraints:
+##     1. No overlap per satellite, with a slew buffer between two captures.
+##     2. At most one opportunity per request.
+##     3. Battery:  sum(energy_i * x_i) <= battery_capacity   (per satellite)
+##     4. Memory:   sum(data_i * x_i)   <= memory_capacity    (per satellite)
+##     5. Per orbit block: sum(x_i) <= max_observations_per_orbit
+##
+## If CP-SAT finishes before the time limit it returns OPTIMAL (proven best schedule);
+## otherwise FEASIBLE (the best schedule found so far).
+##
+## CP-SAT only works with INTEGERS, so:
+##   - times are converted to whole seconds since base_time,
+##   - decimal values are multiplied by a scale factor (value x100, energy x10, data x100).
 
 
 class SatelliteTaskingScheduler:
@@ -36,10 +57,9 @@ class SatelliteTaskingScheduler:
                              only the empty solution (objective = 0).
         """
 
-
-
+        # ---- Read the 3 input tables ----
         self.satellites = pd.read_parquet(satellites_path)  # Each line represents a satellite; Ex: satellite_id, orbit_period_minutes, battery_capacity_wh, ...
-        self.requests = pd.read_parquet(requests_path)
+        self.requests = pd.read_parquet(requests_path)      # Each line represents a customer request; Ex: request_id, priority, value, earliest_start, latest_end, ...
         self.opportunities = pd.read_parquet(opportunities_path)    # Each line represents a opportunity: “SAT-03 can capture REQ-001 from 08:12 to 08:15”.
 
         # Keep only opportunities where feasible = True. "feasible" = False means this opportunity is unusable,
@@ -67,10 +87,11 @@ class SatelliteTaskingScheduler:
         self.request_lookup = self.requests.set_index("request_id").to_dict("index")
 
 
-        self.slew_buffer_seconds = slew_buffer_seconds
-        self.time_limit_seconds = time_limit_seconds
-        self.num_workers = num_workers
-        self.use_greedy_hint = use_greedy_hint
+        # ---- Store the solver settings (explained in the docstring above) ----
+        self.slew_buffer_seconds = slew_buffer_seconds      # Ex: 30.0 s of idle time between 2 captures on one satellite.
+        self.time_limit_seconds = time_limit_seconds        # Ex: 30.0 s, then CP-SAT returns the best schedule found so far.
+        self.num_workers = num_workers                      # Ex: 8 threads searching in parallel.
+        self.use_greedy_hint = use_greedy_hint              # True -> start the search from the greedy schedule.
 
         # Check whether the input data is consistent.
         self._validate_inputs()
@@ -87,14 +108,15 @@ class SatelliteTaskingScheduler:
         #
         # set(A) - set(B) is the set difference:
         # the elements that are in A but not in B.
-        unknow_requests = set(self.opportunities["request_id"]) - set(self.requests["request_id"])
-        unknow_satellites = set(self.opportunities["satellite_id"]) - set(self.satellites["satellite_id"])
+        unknown_requests = set(self.opportunities["request_id"]) - set(self.requests["request_id"])
+        unknown_satellites = set(self.opportunities["satellite_id"]) - set(self.satellites["satellite_id"])   # Same idea for satellite ids.
 
-        if unknow_requests:
-            raise ValueError(f"Opportunities refer to unknow requests: {unknow_requests}")
+        # A non-empty set is "True" in Python -> at least one bad id -> stop with a clear error.
+        if unknown_requests:
+            raise ValueError(f"Opportunities refer to unknow requests: {unknown_requests}")
         
-        if unknow_satellites:
-            raise ValueError(f"Oppotunities refer to unknow satellites: {unknow_satellites}")
+        if unknown_satellites:
+            raise ValueError(f"Oppotunities refer to unknown satellites: {unknown_satellites}")
 
 
     def solve(self) -> ScheduleResult:
@@ -174,8 +196,10 @@ class SatelliteTaskingScheduler:
         # Slew buffer converted to whole seconds (rounded up so the buffer is never shorter than requested).
         slew_buffer = int(math.ceil(self.slew_buffer_seconds))
 
+        # ---- Create the variables of every opportunity ------------------------------------
+        # itertuples: one row at a time, columns readable as attributes (opportunity.window_start).
         for opportunity in self.opportunities.itertuples(index=False):
-            request = self.request_lookup[opportunity.request_id]
+            request = self.request_lookup[opportunity.request_id]   # The request this opportunity would serve.
 
             # The window must lie inside the request's [earliest_start, latest_end] (same check as the greedy scheduler).
             if opportunity.window_start < request["earliest_start"] or opportunity.window_end > request["latest_end"]:
@@ -299,10 +323,13 @@ class SatelliteTaskingScheduler:
         # CP-SAT's NoOverlap does this automatically
         # for all intervals in the same list.
         for satellite_id, intervals in intervals_by_satellite.items():
-            if intervals:
+            if intervals:                           # Only satellites that have at least one interval.
                 model.add_no_overlap(intervals)
 
 
+        # Group the x variables by request: request_id -> [x of each of its opportunities].
+        # Ex:
+        #   "REQ-0001" -> [x_OPP-000001, x_OPP-000007]
         opportunities_by_request: dict[str, list[cp_model.IntVar]] = defaultdict(list)
 
         for opportunity in self.opportunities.itertuples(index=False):
@@ -360,7 +387,8 @@ class SatelliteTaskingScheduler:
         if self.use_greedy_hint:
             self._add_greedy_hint(model=model, opportunity_vars=opportunity_vars, interval_start_vars=interval_start_vars, interval_end_vars=interval_end_vars, duration_vars=duration_vars, start_bounds=start_bounds, slew_buffer=slew_buffer,)
 
-        solver = cp_model.CpSolver()
+        # ---- Solve ------------------------------------------------------------------------
+        solver = cp_model.CpSolver()        # The engine that searches for the best values of all variables.
 
         # Time limit for the solver.
         # If the time limit expires before the solver can prove that the solution is optimal, the solver may still return the best solution it has found.
@@ -383,13 +411,13 @@ class SatelliteTaskingScheduler:
 
         # Change the numerical status of OR-Tools to an easy-to-read label.
         if status == cp_model.OPTIMAL:
-            status_label = "OPTIMAL"
+            status_label = "OPTIMAL"        # Best possible schedule, and the solver proved it.
         elif status == cp_model.FEASIBLE:
-            status_label = "FEASIBLE"
+            status_label = "FEASIBLE"       # Valid schedule, but the time limit ran out before proving it is the best.
         elif status == cp_model.INFEASIBLE:
-            status_label = "INFEASIBLE"
+            status_label = "INFEASIBLE"     # The constraints contradict each other: no valid schedule exists.
         else:
-            status_label = "UNKNOWN"
+            status_label = "UNKNOWN"        # Time limit reached before any solution was found.
 
         return ScheduleResult(
             status=status_label,
@@ -448,7 +476,7 @@ class SatelliteTaskingScheduler:
                 terms.append(opportunity_vars[opportunity.opportunity_id])
                 coefficients.append(int(math.ceil(request[resource_column] * scale - 1e-9)))
 
-            if not terms:
+            if not terms:       # This satellite has no variable left in the model -> no constraint needed.
                 continue
 
             # Maximum capacity of the satellite, also multiplied by the scale factor to match the units of the terms.
@@ -482,7 +510,7 @@ class SatelliteTaskingScheduler:
             opportunities_by_satellite[opportunity.satellite_id].append(opportunity)
 
         for satellite_id, opportunities in opportunities_by_satellite.items():
-            satellite = self.satellite_lookup[satellite_id]
+            satellite = self.satellite_lookup[satellite_id]     # Each satellite has its own orbit period and per-orbit limit.
 
             # Convert the orbital period from minutes to seconds.
             # Formula:
@@ -538,6 +566,7 @@ class SatelliteTaskingScheduler:
         """
         # Run both greedy variants and keep the better one.
         # (The improved greedy is usually better, but greedy is not monotone: on some data the baseline wins.)
+        # List comprehension: build and solve one scheduler per class -> [greedy_result, improved_result].
         greedy_results = [
             scheduler_class.from_dataframes(
                 satellites=self.satellites,
@@ -547,7 +576,7 @@ class SatelliteTaskingScheduler:
             ).solve()
             for scheduler_class in (GreedyScheduler, ImprovedGreedyScheduler)
         ]
-        greedy_result = max(greedy_results, key=lambda result: result.objective_value)
+        greedy_result = max(greedy_results, key=lambda result: result.objective_value)     # Keep the one with the higher total value.
 
         # Group the greedy observations by satellite and sort them by start time.
         observations_by_satellite: dict[str, list] = defaultdict(list)
@@ -558,12 +587,12 @@ class SatelliteTaskingScheduler:
         selected_starts: dict[str, int] = {}    # opportunity_id -> integer start used in the hint.
 
         for observations in observations_by_satellite.values():
-            observations.sort(key=lambda observation: observation.start)
+            observations.sort(key=lambda observation: observation.start)    # Chronological order on this satellite.
 
             previous_end = None     # End (in model seconds) of the last capture kept on this satellite.
 
             for observation in observations:
-                earliest, latest = start_bounds[observation.opportunity_id]
+                earliest, latest = start_bounds[observation.opportunity_id]     # Allowed start range of this capture in the model (seconds).
 
                 # Earliest start that respects both the window and the slew buffer after the previous capture.
                 start = earliest if previous_end is None else max(earliest, previous_end + slew_buffer)
@@ -571,8 +600,8 @@ class SatelliteTaskingScheduler:
                 if start > latest:      # Does not fit after rounding -> leave it out of the hint.
                     continue
 
-                selected_starts[observation.opportunity_id] = start
-                previous_end = start + duration_vars[observation.opportunity_id]
+                selected_starts[observation.opportunity_id] = start                 # Keep this capture in the hint.
+                previous_end = start + duration_vars[observation.opportunity_id]    # Formula: previous_end = start + duration
 
         # Hint EVERY variable (a complete hint is used directly as the first solution;
         # an incomplete one must be "completed" by the solver, which may fail on large models):
@@ -580,9 +609,10 @@ class SatelliteTaskingScheduler:
         #   not selected -> x = 0, start = earliest start (any value in its domain is fine)
         #   end = start + duration + slew_buffer   (consistent with the interval)
         for opportunity_id, is_selected in opportunity_vars.items():
-            selected = opportunity_id in selected_starts
+            selected = opportunity_id in selected_starts        # True if the greedy schedule kept this opportunity.
             start = selected_starts[opportunity_id] if selected else start_bounds[opportunity_id][0]
 
+            # model.add_hint(variable, value): "try this value first" (a suggestion, not a constraint).
             model.add_hint(is_selected, 1 if selected else 0)
             model.add_hint(interval_start_vars[opportunity_id], start)
             model.add_hint(interval_end_vars[opportunity_id], start + duration_vars[opportunity_id] + slew_buffer)
@@ -594,7 +624,7 @@ class SatelliteTaskingScheduler:
         read the x variables and create a list of the selected iterations.
         """
 
-        scheduled = []
+        scheduled = []      # The selected captures, as ScheduledObservation objects.
 
         for opportunity in self.opportunities.itertuples(index=False):
             variable = opportunity_vars.get(opportunity.opportunity_id)     # Retrieve the corresponding variable x.
@@ -642,6 +672,8 @@ class SatelliteTaskingScheduler:
         return scheduled
 
 
+    # ---- Worked example: one opportunity from input to output ----
+    #
     # base_time = 08:00:00
     # window_start = 08:12:00
     # window_end = 08:12:30

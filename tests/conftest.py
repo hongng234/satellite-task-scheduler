@@ -16,15 +16,15 @@ Two kinds of test data:
     2. `write_dataset(...)`: hand-made tiny datasets (1-3 opportunities) where the expected answer
        is obvious, used to pin down one specific behaviour per test.
 """
-from __future__ import annotations
+from __future__ import annotations     # Lets type hints use names defined later in the file.
 
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass       # Short way to declare a class that only stores values.
+from pathlib import Path                # File paths that work on Windows and Linux.
 
-import pandas as pd
-import pytest
+import pandas as pd                     # Builds the hand-made tables.
+import pytest                           # Test framework: @pytest.fixture is defined here.
 
-from src.generate_dataset import DEFAULT_START_TIME, generate_all, parse_start_time, save_dataset
+from src.generate_dataset import DEFAULT_START_TIME, generate_all, parse_start_time, save_dataset  # The real data generator.
 
 # Time 0 used by every hand-made dataset. All windows are written as "seconds after T0".
 T0 = pd.Timestamp("2026-01-01 00:00:00", tz="UTC")
@@ -47,10 +47,10 @@ def at(seconds: float) -> pd.Timestamp:
 @dataclass
 class Dataset:
     """Paths of the 3 Parquet files + the DataFrames themselves (for assertions)."""
-    satellites_path: Path
-    requests_path: Path
-    opportunities_path: Path
-    satellites: pd.DataFrame
+    satellites_path: Path               # <folder>/satellites.parquet
+    requests_path: Path                 # <folder>/requests.parquet
+    opportunities_path: Path            # <folder>/opportunities.parquet
+    satellites: pd.DataFrame            # Same data as the files, kept in memory so tests can compare against it.
     requests: pd.DataFrame
     opportunities: pd.DataFrame
 
@@ -78,12 +78,12 @@ def make_satellite(satellite_id: str = "SAT-01", **overrides) -> dict:
     """
     row = {
         "satellite_id": satellite_id,
-        "orbit_period_minutes": 96.0,
-        "max_observations_per_orbit": 10,
-        "battery_capacity_wh": 1000.0,
-        "memory_capacity_gb": 100.0,
-        "slew_rate_deg_per_sec": 1.0,
-        "initial_phase_deg": 0.0,
+        "orbit_period_minutes": 96.0,           # One orbit = 5,760 s.
+        "max_observations_per_orbit": 10,       # Much more than the 1-3 captures of a hand-made test.
+        "battery_capacity_wh": 1000.0,          # = 100 captures of 10 Wh.
+        "memory_capacity_gb": 100.0,            # = 100 captures of 1 GB.
+        "slew_rate_deg_per_sec": 1.0,           # Not used by the schedulers.
+        "initial_phase_deg": 0.0,               # Not used by the schedulers.
     }
     row.update(overrides)       # Replace default values with the ones passed by the test.
     return row
@@ -98,16 +98,16 @@ def make_request(request_id: str, **overrides) -> dict:
     """
     row = {
         "request_id": request_id,
-        "aoi_id": "AOI-001",
-        "priority": 2,
-        "value": 100.0,
-        "earliest_start": T0,
-        "latest_end": T0 + pd.Timedelta(days=1),
-        "duration_seconds": 10.0,
-        "data_volume_gb": 1.0,
-        "energy_wh": 10.0,
+        "aoi_id": "AOI-001",                        # Area to photograph (not used by the schedulers).
+        "priority": 2,                              # MEDIUM.
+        "value": 100.0,                             # Reward if served.
+        "earliest_start": T0,                       # Request open from T0...
+        "latest_end": T0 + pd.Timedelta(days=1),    # ...until T0 + 1 day, so every hand-made window fits inside.
+        "duration_seconds": 10.0,                   # 10 s capture.
+        "data_volume_gb": 1.0,                      # 1 GB per capture.
+        "energy_wh": 10.0,                          # 10 Wh per capture.
     }
-    row.update(overrides)
+    row.update(overrides)       # Replace default values with the ones passed by the test.
     return row
 
 
@@ -123,12 +123,12 @@ def make_opportunity(opportunity_id: str, request_id: str, start_s: float, end_s
         "opportunity_id": opportunity_id,
         "request_id": request_id,
         "satellite_id": satellite_id,
-        "window_start": at(start_s),
-        "window_end": at(end_s),
-        "duration_seconds": duration,
-        "incidence_angle_deg": 30.0,
-        "off_nadir_deg": 10.0,
-        "feasible": True,
+        "window_start": at(start_s),             # T0 + start_s seconds.
+        "window_end": at(end_s),                 # T0 + end_s seconds.
+        "duration_seconds": duration,            # Capture length (should match the request's duration).
+        "incidence_angle_deg": 30.0,             # Informational only.
+        "off_nadir_deg": 10.0,                   # Informational only.
+        "feasible": True,                        # Usable opportunity.
     }
 
 

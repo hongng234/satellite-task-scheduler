@@ -10,13 +10,13 @@ HOW A PYTEST TEST WORKS
       `assert (column >= 0).all()`.
     - A test PASSES if it reaches the end without a failed assert or an unexpected exception.
 """
-from __future__ import annotations
+from __future__ import annotations     # Lets type hints use names defined later in the file.
 
-from datetime import timezone
+from datetime import timezone           # timezone.utc, to check that parsed dates are in UTC.
 
-import pandas as pd
+import pandas as pd                     # pd.testing.assert_frame_equal and DataFrame operations.
 
-from src.generate_dataset import OPPORTUNITY_COLUMNS, generate_all, generate_opportunities, parse_start_time
+from src.generate_dataset import OPPORTUNITY_COLUMNS, generate_all, generate_opportunities, parse_start_time   # Code under test.
 
 # Fixed start of the horizon for every test in this file.
 START = parse_start_time("2026-01-01T00:00:00+00:00")

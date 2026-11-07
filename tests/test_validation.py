@@ -7,17 +7,17 @@ WHY TEST THE CHECKER ITSELF?
     A broken checker that always returns [] would make every schedule look valid.
     So we also feed it deliberately WRONG schedules and assert that it complains.
 """
-from __future__ import annotations
+from __future__ import annotations     # Lets type hints use names defined later in the file.
 
-import pandas as pd
-import pytest
-from pydantic import ValidationError
+import pandas as pd                     # Reads the Parquet files written by generate_scenario.
+import pytest                           # Test framework: parametrize, raises.
+from pydantic import ValidationError    # Error raised by a Pydantic model when a field is invalid.
 
-from src.benchmark import SCENARIOS, check_schedule, generate_scenario
-from src.models import Opportunity, Priority, ScheduledObservation, ScheduleResult
-from src.scheduler_cp_sat import SatelliteTaskingScheduler
+from src.benchmark import SCENARIOS, check_schedule, generate_scenario                 # Checker and scenario generator under test.
+from src.models import Opportunity, Priority, ScheduledObservation, ScheduleResult     # To build deliberately wrong schedules.
+from src.scheduler_cp_sat import SatelliteTaskingScheduler                             # The 3 schedulers checked end-to-end.
 from src.scheduler_greedy import GreedyScheduler, ImprovedGreedyScheduler
-from tests.conftest import at
+from tests.conftest import at                                                          # at(s) = T0 + s seconds.
 
 # Same slew buffer as the schedulers' default.
 SLEW_BUFFER = 30.0
@@ -46,12 +46,12 @@ def test_every_scheduler_produces_a_valid_schedule(small_dataset, make_scheduler
 def _observation(opportunity_row, start, duration):
     """Helper: build one ScheduledObservation for an opportunity row, with a chosen start time and duration."""
     return ScheduledObservation(
-        request_id=opportunity_row["request_id"],
+        request_id=opportunity_row["request_id"],           # Ids copied from the opportunity row.
         satellite_id=opportunity_row["satellite_id"],
         opportunity_id=opportunity_row["opportunity_id"],
-        start=start,
-        end=start + duration,
-        value=1.0,
+        start=start,                                        # Start chosen by the test (may be wrong on purpose).
+        end=start + duration,                               # Formula: end = start + duration
+        value=1.0,                                          # Value and priority do not matter for the checker.
         priority=Priority.LOW,
     )
 

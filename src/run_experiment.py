@@ -11,7 +11,7 @@ from src.scheduler_cp_sat import SatelliteTaskingScheduler                 # Exa
 from src.scheduler_greedy import GreedyScheduler, ImprovedGreedyScheduler  # The two greedy heuristics.
 
 
-## Key point: this script runs the 3 algorithms on the SAME dataset and writes their results side by side.
+## Key point: this script runs the 3 algorithms on one dataset and writes their results side by side.
 ##
 ## Usage:
 ##   python -m src.run_experiment                    # default: data/processed -> output/
@@ -26,8 +26,8 @@ from src.scheduler_greedy import GreedyScheduler, ImprovedGreedyScheduler  # The
 ##   experiment_summary.json           everything above, including every capture, as JSON
 
 
-# Columns of a schedule table. Used so an empty schedule still produces a readable Parquet file.
-# model_fields lists the fields of the Pydantic model, in declaration order.
+# Columns of a schedule table. With them, an empty schedule is still written as a Parquet file with the right columns.
+# model_fields lists the fields of the Pydantic model in the order they are declared.
 # Ex:
 #   ["request_id", "satellite_id", "opportunity_id", "start", "end", "value", "priority"]
 SCHEDULE_COLUMNS = list(ScheduledObservation.model_fields.keys())
@@ -46,38 +46,38 @@ def result_to_row(result: ScheduleResult, method_name: str,) -> dict:
         "status": result.status,                                # OPTIMAL / FEASIBLE / INFEASIBLE / UNKNOWN.
         "objective_value": round(result.objective_value, 2),    # Total value served, 2 decimals.
         "runtime_seconds": round(result.runtime_seconds, 3),    # Time taken by solve(), 3 decimals.
-        "scheduled_requests": len(result.scheduled),     # each request is served at most once -> rows = served requests
+        "scheduled_requests": len(result.scheduled),            # A request is served at most once, so captures = served requests.
         "solver_status": result.solver_status,                  # Raw solver status, or "GREEDY_HEURISTIC".
     }
 
 
 def scheduled_to_dataframe(result: ScheduleResult) -> pd.DataFrame:
     """Convert the list of ScheduledObservation into a DataFrame (one row per capture)."""
-    rows = [observation.model_dump(mode="json") for observation in result.scheduled]   # mode="json": datetimes -> ISO strings
+    rows = [observation.model_dump(mode="json") for observation in result.scheduled]   # mode="json" turns datetimes into ISO strings.
 
-    # columns=... keeps the expected columns even when the schedule is empty.
+    # columns=... keeps the columns in place when the schedule is empty.
     return pd.DataFrame(rows, columns=SCHEDULE_COLUMNS)
 
 
 def add_improvement_column(comparison: pd.DataFrame, baseline_method: str = "greedy",) -> pd.DataFrame:
     """
-    Add 'value_improvement_vs_greedy' = relative gain over the baseline greedy.
+    Add the column 'value_improvement_vs_greedy': the relative gain over the baseline greedy.
 
     Formula:
         improvement = objective / objective_baseline - 1
     Ex:
-        CP-SAT = 36,770, greedy = 36,509  -> improvement = 0.0072 (= +0.72 %)
-    If the baseline objective is 0, the ratio is undefined -> NaN.
+        CP-SAT = 36,769, greedy = 36,579  -> improvement = 0.0052 (= +0.52 %)
+    If the baseline objective is 0 the ratio is undefined, and the column is NaN.
     """
-    # Objective of the baseline row: filter the row where method == "greedy", take its objective_value.
-    # .iloc[0] -> the first (and only) matching value.
+    # Objective of the baseline: take the row where method == "greedy" and read its objective_value.
+    # .iloc[0] is the first matching value, and there is only one.
     baseline = comparison.loc[comparison["method"] == baseline_method, "objective_value"].iloc[0]
 
     if baseline > 0:
-        # Computed for every row at once (pandas column arithmetic). The greedy row itself gets 0.
+        # pandas computes this for every row at once. The greedy row itself gets 0.
         comparison["value_improvement_vs_greedy"] = comparison["objective_value"] / baseline - 1
     else:
-        # Division by 0 is not meaningful -> NaN ("not a number") for every row.
+        # Dividing by 0 has no meaning, so every row gets NaN ("not a number").
         comparison["value_improvement_vs_greedy"] = float("nan")
 
     return comparison
@@ -86,18 +86,18 @@ def add_improvement_column(comparison: pd.DataFrame, baseline_method: str = "gre
 def run_all(satellites_path: Path, requests_path: Path, opportunities_path: Path, time_limit: float, workers: int, slew_buffer_seconds: float, use_greedy_hint: bool = True,) -> dict[str, ScheduleResult]:
     """
     Run the 3 algorithms on the same dataset.
-    Also used by benchmark.py for every scenario.
+    benchmark.py calls this once per scenario.
 
     Returns:
         {"cp_sat": result, "greedy": result, "greedy_improved": result}
     """
-    # The 3 file paths, bundled once. **paths unpacks them as keyword arguments:
+    # The 3 file paths in one dict. **paths unpacks them as keyword arguments:
     #   GreedyScheduler(**paths) == GreedyScheduler(satellites_path=..., requests_path=..., opportunities_path=...)
     paths = dict(satellites_path=satellites_path, requests_path=requests_path, opportunities_path=opportunities_path,)
 
-    results: dict[str, ScheduleResult] = {}     # method name -> result, filled below.
+    results: dict[str, ScheduleResult] = {}     # method name -> result.
 
-    # 1. Exact optimizer (may take up to time_limit seconds).
+    # 1. Exact optimizer. It can take the whole time_limit.
     print("Running CP-SAT scheduler...")
     results["cp_sat"] = SatelliteTaskingScheduler(**paths, time_limit_seconds=time_limit, num_workers=workers, slew_buffer_seconds=slew_buffer_seconds, use_greedy_hint=use_greedy_hint,).solve()
 
@@ -121,18 +121,18 @@ def main() -> None:
     parser.add_argument("--time-limit", type=float, default=30.0)                      # CP-SAT time limit (seconds).
     parser.add_argument("--workers", type=int, default=8)                              # CP-SAT threads.
     parser.add_argument("--slew-buffer-seconds", type=float, default=30.0)             # Min idle time between 2 captures.
-    parser.add_argument("--no-hint", action="store_true", help="Run CP-SAT without the greedy warm start.")   # Flag: present -> True.
+    parser.add_argument("--no-hint", action="store_true", help="Run CP-SAT without the greedy warm start.")   # A flag: True when it is given.
 
-    args = parser.parse_args()      # Ex: args.time_limit = 30.0, args.no_hint = False. ("-" in option names becomes "_".)
+    args = parser.parse_args()      # Ex: args.time_limit = 30.0, args.no_hint = False. A "-" in an option name becomes "_".
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)      # Create output/ if missing (no error if it already exists).
+    args.output_dir.mkdir(parents=True, exist_ok=True)      # Create output/ if it is missing. No error if it already exists.
 
     # ---- 2. Locate the input files ----
     satellites_path = args.data_dir / "satellites.parquet"         # The / operator joins path parts.
     requests_path = args.data_dir / "requests.parquet"
     opportunities_path = args.data_dir / "opportunities.parquet"
 
-    # Fail early with a clear message if the dataset was not generated.
+    # If the dataset was never generated, stop here and say how to generate it.
     for path in [satellites_path, requests_path, opportunities_path]:
         if not path.exists():
             raise FileNotFoundError(f"Missing dataset file: {path}. Run `python -m src.generate_dataset` first.")
@@ -145,25 +145,25 @@ def main() -> None:
         time_limit=args.time_limit,
         workers=args.workers,
         slew_buffer_seconds=args.slew_buffer_seconds,
-        use_greedy_hint=not args.no_hint,       # --no-hint given -> use_greedy_hint = False.
+        use_greedy_hint=not args.no_hint,       # With --no-hint, use_greedy_hint is False.
     )
 
     # ---- Comparison table: one row per algorithm ----
     comparison = pd.DataFrame([result_to_row(result, method) for method, result in results.items()])
     comparison = add_improvement_column(comparison)
 
-    comparison.to_csv(args.output_dir / "scheduler_comparison.csv", index=False,)     # index=False: do not write the 0, 1, 2 row numbers.
+    comparison.to_csv(args.output_dir / "scheduler_comparison.csv", index=False,)     # index=False leaves out the 0, 1, 2 row numbers.
 
     # ---- One schedule file per algorithm: output/<method>_schedule.parquet ----
-    schedule_files = []         # Paths written, printed at the end.
+    schedule_files = []         # Paths of the files written, printed at the end.
     for method, result in results.items():
         path = args.output_dir / f"{method}_schedule.parquet"      # Ex: output/cp_sat_schedule.parquet
         scheduled_to_dataframe(result).to_parquet(path, index=False,)
         schedule_files.append(path)
 
-    # ---- Full results (all observations) as JSON ----
-    # `with open(...) as f` closes the file automatically at the end of the block.
-    # default=str converts any value json cannot write natively (ex: datetime) to text.
+    # ---- Full results, every capture included, as JSON ----
+    # `with open(...) as f` closes the file at the end of the block.
+    # default=str turns any value json cannot write (ex: a datetime) into text.
     with open(args.output_dir / "experiment_summary.json", "w", encoding="utf-8",) as f:
         json.dump({method: result.model_dump(mode="json") for method, result in results.items()}, f, indent=2, default=str,)
 
@@ -178,7 +178,7 @@ def main() -> None:
     print(f"- {args.output_dir / 'experiment_summary.json'}")
 
 
-# Runs main() only when the file is executed directly (python -m src.run_experiment),
-# not when it is imported by another module (benchmark.py imports run_all from here).
+# main() runs when the file is executed directly (python -m src.run_experiment).
+# It does not run on import, and benchmark.py imports run_all from this file.
 if __name__ == "__main__":
     main()

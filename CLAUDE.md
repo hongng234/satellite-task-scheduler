@@ -3,15 +3,17 @@
 
 Schedules Earth-observation captures for a satellite constellation over a planning horizon (default 48 h).
 It compares an exact optimizer (OR-Tools CP-SAT) with two greedy heuristics. All data is **simulated** by
-`src/generate_dataset.py`; this is not a real orbital model. The README is the human-facing overview,
-and `docs/scheduler_comparison.md` explains the benchmark in Vietnamese and English.
+`src/generate_dataset.py`; this is not a real orbital model. The README is the human-facing overview.
+`docs/` holds longer explanations for the user only; it is git-ignored and must not be committed.
 
 ## Commands
 Use the venv interpreter `.venv/Scripts/python.exe` (Windows, Python 3.14). Run everything from the repo root
 with `python -m src.<module>`, because imports are `from src.x import ...`.
 
 ```bash
-python -m pytest                               # 35 tests, ~1 s (make test)
+python -m pytest                               # 62 tests, ~2 s (make test)
+python -m ruff check src tests                 # make lint (settings in pyproject.toml)
+python -m mypy src                             # make typecheck
 python -m src.generate_dataset                 # data/processed/*.parquet (make dataset)
 python -m src.run_experiment                   # 3 algorithms -> output/ (make run); --no-hint disables warm start
 python -m src.preview_dataset --rows 200       # head/tail of each table (make preview)
@@ -22,6 +24,7 @@ python -m src.benchmark --generate-only        # only write data/benchmark/<scen
 
 ## Layout
 - `src/models.py`: Pydantic models. `ScheduleResult` / `ScheduledObservation` are the common output of every scheduler.
+  `validate_tables(...)` checks the input tables; every scheduler calls it from `_validate_inputs`.
 - `src/generate_dataset.py`: `generate_all(...)` builds the 3 DataFrames in memory, and `save_dataset(...)` writes Parquet.
   The generator is reproducible (fixed `--start_time`, seeded RNGs, ids `OPP-000001`). Satellite passes are
   anchored to the common `start_time` plus a per-AOI orbit fraction.
@@ -44,8 +47,10 @@ Decision `x_i ∈ {0,1}` per opportunity. Maximize `Σ value_i · x_i` subject t
 3. No overlap per satellite, with a slew buffer: `next_start ≥ prev_end + slew_buffer` (default 30 s).
 4. Battery and 5. memory per satellite, as budgets for the whole horizon (no recharge, no downlink).
 6. Per orbit block `floor((window_start − base_time) / orbit_seconds)`: at most `max_observations_per_orbit` captures.
+   Compute it with `GreedyScheduler._orbit_block` (CP-SAT reuses it). Do not round the offset first:
+   orbit periods are not whole seconds.
 
-## CP-SAT pitfalls (already handled, covered by tests — do not regress)
+## CP-SAT pitfalls (already handled, covered by tests; do not regress)
 - Intervals **must be optional** (`new_optional_interval_var(..., is_present=x)`); otherwise the model is infeasible.
 - Opportunities dropped from the model (window shorter than the capture) have no variable. Every later loop must skip them.
 - CP-SAT is integer-only. Times are seconds since `base_time`: ceil for starts and durations, floor for window ends.
@@ -75,4 +80,5 @@ Decision `x_i ∈ {0,1}` per opportunity. Maximize `Σ value_i · x_i` subject t
 - When fixing a bug, add a regression test, using a hand-made dataset from `conftest.py` where possible.
 - Do not claim results or tests that do not exist. README numbers come from real benchmark runs, so update
   them when behaviour changes.
-- `data/`, `output/`, `*.parquet`, `*.csv`, `*.json` are git-ignored.
+- `docs/`, `data/`, `output/`, `*.parquet`, `*.csv`, `*.json` are git-ignored.
+- `src/generate_dataset.py` was commented by hand by the user. Do not edit it unless asked.

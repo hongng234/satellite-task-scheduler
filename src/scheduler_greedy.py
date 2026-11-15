@@ -8,15 +8,16 @@ from pathlib import Path                # File paths that work on Windows and Li
 
 import pandas as pd                     # Tables (DataFrames) read from the Parquet files.
 
-from src.models import (Priority, ScheduleResult, ScheduledObservation,)   # Shared output format of every scheduler.
+from src.models import (Priority, ScheduleResult, ScheduledObservation, validate_tables,)   # Shared output format and input checks.
 
 
-## Key point: a GREEDY scheduler is fast but not optimal.
-## It decides once per opportunity ("take it" or "skip it") in a fixed order and never changes its mind.
-## It is the baseline that the exact CP-SAT scheduler (scheduler_cp_sat.py) is compared with,
-## and CP-SAT also uses the best greedy schedule as its starting point (warm start).
+## Key point: a greedy scheduler is fast, but its schedule is usually not the best one.
+## It looks at the opportunities in a fixed order, decides "take it" or "skip it" once for each,
+## and never changes an earlier decision.
+## The exact CP-SAT scheduler (scheduler_cp_sat.py) is compared against it, and CP-SAT also
+## starts its search from the better of the two greedy schedules (warm start).
 ##
-## Two variants, which differ ONLY in how they choose the start time (_find_start):
+## There are two variants. The only difference is how they choose the start time (_find_start):
 ##   GreedyScheduler          -> start exactly at window_start, or skip.
 ##   ImprovedGreedyScheduler  -> earliest free start anywhere inside the window.
 
@@ -26,15 +27,15 @@ class GreedyScheduler:
     Baseline greedy heuristic.
 
     Idea:
-        1. Sort all opportunities from "best" to "worst" (priority first, then value per second).
-        2. Walk through the sorted list once and accept an opportunity if it does not break any
-           constraint, given the opportunities already accepted.
-        3. Never go back to change an earlier decision.
+        1. Sort all opportunities from best to worst (priority first, then value per second).
+        2. Go through the sorted list once. Accept an opportunity if it breaks no constraint
+           together with the ones already accepted.
+        3. Never change an earlier decision.
 
     Baseline rule for the start time:
         The capture always starts exactly at window_start.
-        If the satellite is busy at that moment, the opportunity is skipped
-        (even if a later start inside the window would have been free).
+        If the satellite is busy at that moment, the opportunity is skipped,
+        even when a later start inside the window would have been free.
     """
 
     # Name used in reports (run_experiment.py, benchmark.py) and in output file names.
@@ -42,7 +43,7 @@ class GreedyScheduler:
     METHOD_NAME = "greedy"
 
     def __init__(self, satellites_path: Path, requests_path: Path, opportunities_path: Path, slew_buffer_seconds: float = 30.0,) -> None:
-        # Normal constructor: read the 3 Parquet files and hand them to the shared setup.
+        # Read the 3 Parquet files and pass them to _setup.
         #   satellites_path     -> data/processed/satellites.parquet
         #   requests_path       -> data/processed/requests.parquet
         #   opportunities_path  -> data/processed/opportunities.parquet
@@ -54,28 +55,28 @@ class GreedyScheduler:
             slew_buffer_seconds=slew_buffer_seconds,
         )
 
-    # @classmethod: called on the class itself -> GreedyScheduler.from_dataframes(...), and receives the class as `cls`.
-    # Because it uses `cls`, ImprovedGreedyScheduler.from_dataframes(...) builds an ImprovedGreedyScheduler.
+    # A @classmethod is called on the class, as in GreedyScheduler.from_dataframes(...), and receives that class as `cls`.
+    # Since it builds the object from `cls`, ImprovedGreedyScheduler.from_dataframes(...) returns an ImprovedGreedyScheduler.
     @classmethod
-    def from_dataframes(cls, satellites: pd.DataFrame, requests: pd.DataFrame, opportunities: pd.DataFrame, slew_buffer_seconds: float = 30.0,) -> "GreedyScheduler":
+    def from_dataframes(cls, satellites: pd.DataFrame, requests: pd.DataFrame, opportunities: pd.DataFrame, slew_buffer_seconds: float = 30.0,) -> GreedyScheduler:
         """
-        Build the scheduler from DataFrames already in memory (no file reading).
-        Used by the CP-SAT scheduler to compute a warm-start hint.
+        Build the scheduler from DataFrames that are already in memory.
+        The CP-SAT scheduler uses this to compute its warm-start hint.
         """
-        scheduler = cls.__new__(cls)    # Create the object without calling __init__ (which reads files).
+        scheduler = cls.__new__(cls)    # Create the object without calling __init__, which would read files.
         scheduler._setup(satellites=satellites, requests=requests, opportunities=opportunities, slew_buffer_seconds=slew_buffer_seconds,)
         return scheduler
 
     def _setup(self, satellites: pd.DataFrame, requests: pd.DataFrame, opportunities: pd.DataFrame, slew_buffer_seconds: float,) -> None:
-        # Shared by __init__ and from_dataframes: store the tables and prepare fast lookups.
-        # (The leading "_" in the name means "internal helper, not meant to be called from outside".)
+        # Called by both __init__ and from_dataframes. Stores the tables and builds the lookup dictionaries.
+        # The leading "_" marks a helper that code outside the class should not call.
         self.satellites = satellites        # One row per satellite (capacities, orbit period, ...).
         self.requests = requests            # One row per request (value, priority, energy, data, ...).
 
-        # Keep only usable opportunities (feasible = True). .copy() avoids modifying the caller's DataFrame.
+        # Keep only the rows with feasible = True. .copy() leaves the caller's DataFrame untouched.
         self.opportunities = opportunities[opportunities["feasible"]].copy()
 
-        # Dictionaries for O(1) lookup (no need to search the whole table each time):
+        # Dictionaries keyed by id, so a lookup does not have to search the table:
         #   satellite_id -> {"battery_capacity_wh": ..., ...}
         #   request_id   -> {"value": ..., "energy_wh": ..., ...}
         # Ex:
@@ -83,47 +84,38 @@ class GreedyScheduler:
         self.satellite_lookup = self.satellites.set_index("satellite_id").to_dict("index")
         self.request_lookup = self.requests.set_index("request_id").to_dict("index")
 
-        # Minimum idle time required between two captures on the same satellite (to re-orient).
+        # Idle time a satellite needs between two captures to turn towards the next target.
         self.slew_buffer_seconds = slew_buffer_seconds
 
-        # Stop early with a clear error if the tables do not match each other.
+        # Stop here if the three tables do not match each other.
         self._validate_inputs()
 
     def _validate_inputs(self) -> None:
-        """Every opportunity must reference an existing request and satellite (same check as CP-SAT)."""
-        # set(A) - set(B): ids used in opportunities but missing from the master tables.
-        # Ex:
-        #   opportunities use {"REQ-1", "REQ-2", "REQ-9"}, requests table has {"REQ-1", "REQ-2"}
-        #   -> unknown_requests = {"REQ-9"}
-        unknown_requests = set(self.opportunities["request_id"]) - set(self.requests["request_id"])
-        unknown_satellites = set(self.opportunities["satellite_id"]) - set(self.satellites["satellite_id"])
-
-        # A non-empty set is "True" in Python -> at least one bad id -> raise an error.
-        if unknown_requests:
-            raise ValueError(f"Opportunities refer to unknown requests: {unknown_requests}")
-
-        if unknown_satellites:
-            raise ValueError(f"Opportunities refer to unknown satellites: {unknown_satellites}")
+        """
+        Raise ValueError if the tables do not fit together. CP-SAT runs the same checks.
+        The checks are listed in validate_tables (models.py). Ex: an unknown request id, a negative slew buffer.
+        """
+        validate_tables(self.satellites, self.requests, self.opportunities, self.slew_buffer_seconds)
 
     def solve(self) -> ScheduleResult:
         """
         Build the greedy schedule.
 
         Returns:
-            ScheduleResult with status "FEASIBLE" (a heuristic never proves optimality)
-            and solver_status "GREEDY_HEURISTIC".
+            ScheduleResult with status "FEASIBLE" and solver_status "GREEDY_HEURISTIC".
+            The status is never "OPTIMAL", because a heuristic cannot prove that its schedule is the best.
         """
         started = time.perf_counter()   # Start the runtime clock.
 
         # ---- Step 1: score and sort opportunities -------------------------------------------
         #
-        # Sort key (ascending, so "best" comes first):
+        # Sort key, in ascending order, so the best opportunity comes first:
         #   1. -priority          -> CRITICAL (4) before LOW (1)
         #   2. -value_density     -> higher value per second of capture first
-        #   3. window_start       -> earlier windows first (leaves room for later ones)
-        #   4. opportunity_id     -> deterministic tie-break
+        #   3. window_start       -> earlier windows first
+        #   4. opportunity_id     -> breaks ties, so the order is the same on every run
         #
-        # The minus signs turn "largest first" into "smallest first", because sort() is ascending.
+        # sort() puts the smallest key first. The minus signs make the largest priority and density the smallest keys.
         #
         # Formula:
         #   value_density = value / duration_seconds
@@ -131,7 +123,7 @@ class GreedyScheduler:
         #   value = 120, duration = 10 s  -> density = 12 per second
         scored = []         # List of (sort_key, opportunity) pairs.
 
-        for opportunity in self.opportunities.itertuples(index=False):     # itertuples: one row at a time, fields as attributes (opportunity.request_id).
+        for opportunity in self.opportunities.itertuples(index=False):     # One row at a time, with fields as attributes (opportunity.request_id).
             request = self.request_lookup[opportunity.request_id]           # The request this opportunity would serve.
 
             value_density = request["value"] / request["duration_seconds"]
@@ -140,14 +132,14 @@ class GreedyScheduler:
 
             scored.append((sort_key, opportunity))
 
-        # Sort only by the key. The opportunity namedtuple itself is never compared.
+        # Sort by the key only, so Python never has to compare two opportunity rows.
         scored.sort(key=lambda item: item[0])
 
         # ---- Step 2: state of each satellite while we accept opportunities ------------------
 
         # busy_intervals[satellite_id] = list of (busy_start, busy_end), kept sorted by busy_start.
-        # Each accepted capture blocks [start - buffer, end + buffer], so the next capture must
-        # stay at least `buffer` seconds away on both sides.
+        # Each accepted capture blocks [start - buffer, end + buffer]. Any other capture then has
+        # to stay at least `buffer` seconds away, before or after.
         # Ex (buffer = 30 s):
         #   capture [08:12:00, 08:12:10]  -> busy [08:11:30, 08:12:40]
         busy_intervals: dict[str, list[tuple]] = defaultdict(list)
@@ -156,16 +148,15 @@ class GreedyScheduler:
         used_memory: dict[str, float] = defaultdict(float)          # GB stored so far per satellite (starts at 0.0).
         orbit_counts: dict[str, dict[int, int]] = defaultdict(dict) # orbit_counts[sat][block_id] = captures already in that orbit.
 
-        # Time 0 of the problem (the earliest window of all). Orbit blocks are counted from here.
-        # Computed once (it was recomputed inside the loop before).
+        # Second 0 of the problem: the earliest window of all. Orbit blocks are counted from here.
         base_time = self.opportunities["window_start"].min()
 
         scheduled = []              # Accepted observations.
-        served_requests = set()     # request_ids already served (a request is served at most once).
+        served_requests = set()     # request_ids that already have a capture.
 
-        # ---- Step 3: walk through the sorted list and accept what fits ---------------------
-        # Each `continue` below means "this opportunity breaks a constraint -> skip it, go to the next one".
-        for _, opportunity in scored:       # `_` = the sort key, not needed any more.
+        # ---- Step 3: go through the sorted list and accept what fits -----------------------
+        # Each `continue` below skips an opportunity that would break a constraint.
+        for _, opportunity in scored:       # `_` is the sort key, which is no longer needed.
             request = self.request_lookup[opportunity.request_id]
             satellite = self.satellite_lookup[opportunity.satellite_id]
 
@@ -197,16 +188,16 @@ class GreedyScheduler:
             #   count[block_id] + 1 <= max_observations_per_orbit
             orbit_block = self._orbit_block(timestamp=opportunity.window_start, base_time=base_time, orbit_period_minutes=satellite["orbit_period_minutes"],)
 
-            current_count = orbit_counts[opportunity.satellite_id].get(orbit_block, 0)     # .get(..., 0): 0 captures if this orbit is still empty.
+            current_count = orbit_counts[opportunity.satellite_id].get(orbit_block, 0)     # .get(..., 0) returns 0 for an orbit with no capture yet.
 
-            if current_count >= satellite["max_observations_per_orbit"]:    # Orbit already full -> skip.
+            if current_count >= satellite["max_observations_per_orbit"]:    # This orbit is already full.
                 continue
 
-            # Constraint: no overlap with captures already on this satellite (including slew buffer).
-            # The start-time rule differs between the baseline and the improved greedy.
+            # Constraint: no overlap with the captures already on this satellite, slew buffer included.
+            # This is the one step where the baseline and the improved greedy differ.
             start = self._find_start(busy_intervals=busy_intervals[opportunity.satellite_id], opportunity=opportunity,)
 
-            if start is None:       # No free start time -> skip this opportunity.
+            if start is None:       # The satellite has no free start time for this capture.
                 continue
 
             # The capture lasts exactly duration_seconds.
@@ -214,7 +205,7 @@ class GreedyScheduler:
             #   end = start + duration
             end = start + timedelta(seconds=opportunity.duration_seconds)
 
-            # ---- All constraints passed: accept the opportunity and update the state ----
+            # ---- Every check passed: accept the opportunity and update the state ----
             scheduled.append(
                 ScheduledObservation(
                     request_id=opportunity.request_id,
@@ -230,17 +221,17 @@ class GreedyScheduler:
             served_requests.add(opportunity.request_id)     # This request cannot be served again.
 
             # Block the satellite for [start - buffer, end + buffer].
-            # bisect.insort keeps the list sorted by busy_start (needed by the improved greedy).
+            # bisect.insort keeps the list sorted by busy_start, which the improved greedy relies on.
             buffer = timedelta(seconds=self.slew_buffer_seconds)
             bisect.insort(busy_intervals[opportunity.satellite_id], (start - buffer, end + buffer))
 
-            # Consume the satellite's resources.
+            # Take the energy, memory and orbit slot from the satellite's budget.
             used_energy[opportunity.satellite_id] += request["energy_wh"]
             used_memory[opportunity.satellite_id] += request["data_volume_gb"]
             orbit_counts[opportunity.satellite_id][orbit_block] = current_count + 1
 
         return ScheduleResult(
-            status="FEASIBLE",      # A heuristic always returns a valid (not necessarily optimal) schedule.
+            status="FEASIBLE",      # Valid, but with no proof that it is the best schedule.
             objective_value=sum(observation.value for observation in scheduled),    # Total value served.
             runtime_seconds=time.perf_counter() - started,                          # Elapsed time since `started`.
             scheduled=scheduled,
@@ -266,9 +257,9 @@ class GreedyScheduler:
             if start < busy_end and end > busy_start:
                 return None
 
-        return start        # No busy interval overlaps -> the satellite is free at window_start.
+        return start        # Nothing overlaps, so the satellite is free at window_start.
 
-    # @staticmethod: a plain function placed in the class; it does not use `self`.
+    # A @staticmethod is a plain function kept inside the class. It does not use `self`.
     @staticmethod
     def _fits_time_window(opportunity, request,) -> bool:
         """
@@ -279,7 +270,7 @@ class GreedyScheduler:
         Ex:
             request [02:00, 12:00], window [08:12:00, 08:12:30], duration 10 s -> True
         """
-        # All 3 conditions must be True (joined with `and`).
+        # The 3 conditions are joined with `and`, so all of them must hold.
         return (
             opportunity.window_start >= request["earliest_start"]
             and opportunity.window_end <= request["latest_end"]
@@ -299,17 +290,17 @@ class GreedyScheduler:
         """
         orbit_seconds = orbit_period_minutes * 60       # Minutes -> seconds.
 
-        # `//` is floor division (rounds down). int() turns the float result into an integer index.
+        # `//` is floor division: it divides and rounds down. int() turns the float result into an integer index.
         return int((timestamp - base_time).total_seconds() // orbit_seconds)
 
 
-# ImprovedGreedyScheduler(GreedyScheduler): inherits EVERYTHING from GreedyScheduler
-# (constructor, sorting, constraints) and only replaces METHOD_NAME and _find_start.
+# ImprovedGreedyScheduler(GreedyScheduler) inherits the constructor, the sorting and the constraint
+# checks from GreedyScheduler. It replaces only METHOD_NAME and _find_start.
 class ImprovedGreedyScheduler(GreedyScheduler):
     """
-    Same greedy order and constraints as GreedyScheduler, but a smarter start-time rule:
+    Same order and same constraints as GreedyScheduler, with a different start-time rule.
 
-    Instead of "window_start or nothing", it takes the EARLIEST free start time inside
+    The baseline tries window_start and nothing else. This variant takes the earliest start in
         [window_start, window_end - duration]
     that does not overlap any busy interval of the satellite.
 
@@ -334,21 +325,21 @@ class ImprovedGreedyScheduler(GreedyScheduler):
 
         candidate = opportunity.window_start    # Try the earliest possible start first.
 
-        # busy_intervals is sorted by busy_start, so one left-to-right pass is enough:
-        #   - an interval that ends before the candidate is irrelevant,
-        #   - an interval that starts after the candidate capture ends means all later ones do too,
-        #   - otherwise the candidate overlaps -> push it to the end of that busy interval.
+        # busy_intervals is sorted by busy_start, so one pass from left to right is enough:
+        #   - an interval that ends before the candidate cannot be in the way,
+        #   - an interval that starts after the capture would end leaves the slot free, and so do all later ones,
+        #   - any other interval overlaps, and the candidate moves to the end of it.
         for busy_start, busy_end in busy_intervals:
-            if busy_end <= candidate:                   # Busy interval is entirely before the candidate -> ignore it.
+            if busy_end <= candidate:                   # This busy interval is over before the candidate starts.
                 continue
 
-            if busy_start >= candidate + duration:      # Busy interval starts after the capture would end -> free slot found.
+            if busy_start >= candidate + duration:      # It starts after the capture would end, so the slot is free.
                 break
 
-            candidate = busy_end                        # Overlap -> try again right after this busy interval.
+            candidate = busy_end                        # Overlap. Try again right after this busy interval.
 
-            if candidate > latest_start:    # Pushed past the window -> no free slot.
+            if candidate > latest_start:    # The candidate was pushed past the window, so there is no free slot.
                 return None
 
-        # Final check: the candidate must still allow the whole capture inside the window.
+        # The loop can also end without a busy interval in the way, so check the window once more.
         return candidate if candidate <= latest_start else None

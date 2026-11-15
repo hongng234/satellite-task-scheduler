@@ -16,8 +16,8 @@ from pathlib import Path                # File paths that work on Windows and Li
 import pandas as pd                     # Reads the Parquet files and prints them as tables.
 
 
-## Key point: this is only a viewer. It reads the dataset and prints it; it changes nothing.
-## Parquet is a binary format, so the files cannot be opened in a text editor. This script shows them.
+## Key point: this is a viewer. It reads the dataset, prints it, and writes nothing back to it.
+## Parquet is a binary format that a text editor cannot open, so this script is the way to look at the data.
 
 
 # Table name -> Parquet file name inside --data-dir.
@@ -30,30 +30,30 @@ TABLES = {
 
 
 def configure_pandas() -> None:
-    """Show every column and avoid line wrapping / '...' truncation when printing DataFrames."""
-    pd.set_option("display.max_columns", None)      # show all columns
-    pd.set_option("display.width", 250)             # wide lines instead of wrapping
-    pd.set_option("display.max_colwidth", 40)       # cut very long cell text
-    pd.set_option("display.max_rows", None)         # print all requested rows (no '...')
+    """Make pandas print every column and every requested row, on wide lines."""
+    pd.set_option("display.max_columns", None)      # Show all columns.
+    pd.set_option("display.width", 250)             # Lines up to 250 characters wide before wrapping.
+    pd.set_option("display.max_colwidth", 40)       # Cut cell text longer than 40 characters.
+    pd.set_option("display.max_rows", None)         # Print every requested row. pandas would otherwise replace the middle with '...'.
 
 
 def print_section(title: str) -> None:
     """
-    Print a visible separator line with a title.
+    Print a title between two separator lines.
 
     Ex:
         ====================...
         REQUESTS  -  500 rows x 9 columns
         ====================...
     """
-    print("\n" + "=" * 100)     # "=" * 100 -> a line of 100 "=" characters.
+    print("\n" + "=" * 100)     # "=" * 100 is a string of 100 "=" characters.
     print(title)
     print("=" * 100)
 
 
 def preview_table(name: str, df: pd.DataFrame, rows: int, save_dir: Path | None,) -> None:
     """
-    Print summary info + head(rows) + tail(rows) for one table.
+    Print a summary of one table, then its first and last `rows` rows.
 
     Parameters:
         name:     table name, ex: "requests".
@@ -61,21 +61,21 @@ def preview_table(name: str, df: pd.DataFrame, rows: int, save_dir: Path | None,
         rows:     how many rows to show at the start and at the end.
         save_dir: folder for the CSV export, or None for no export.
     """
-    # len(df) = number of rows, df.shape[1] = number of columns. {:,} adds thousands separators (66,000).
+    # len(df) is the number of rows and df.shape[1] the number of columns. {:,} adds thousands separators (66,000).
     print_section(f"{name.upper()}  -  {len(df):,} rows x {df.shape[1]} columns")
 
-    # Data type of each column (ex: window_start -> datetime64[ns, UTC]).
+    # Data type of each column. Ex: window_start -> datetime64[ns, UTC]
     print("\n-- dtypes --")
     print(df.dtypes.to_string())
 
     # Basic statistics of numeric columns: count, mean, std, min, quartiles, max.
-    numeric = df.select_dtypes("number")            # Keep only the numeric columns.
-    if not numeric.empty:                           # Skip if the table has no numeric column.
+    numeric = df.select_dtypes("number")            # The numeric columns only.
+    if not numeric.empty:                           # A table with no numeric column has nothing to describe.
         print("\n-- describe (numeric columns) --")
-        print(numeric.describe().T.to_string())     # .T (transpose): one row per column, easier to read.
+        print(numeric.describe().T.to_string())     # .T transposes the result: one row per column, which is easier to read.
 
-    # First and last rows. If the table is shorter than 2*rows, head and tail overlap -> print it once.
-    # Ex: rows = 200, table of 250 rows -> head and tail would share 150 rows -> print all 250 once.
+    # First and last rows. In a table shorter than 2*rows the head and tail would overlap, so it is printed once.
+    # Ex: rows = 200 and a table of 250 rows. Head and tail would share 150 rows, so all 250 are printed once.
     if len(df) <= 2 * rows:
         print(f"\n-- all {len(df)} rows --")
         print(df.to_string())
@@ -86,9 +86,9 @@ def preview_table(name: str, df: pd.DataFrame, rows: int, save_dir: Path | None,
         print(f"\n-- last {rows} rows --")
         print(df.tail(rows).to_string())
 
-    # Optional CSV export (easier to scroll in Excel / VS Code).
+    # CSV export, when asked for. A CSV is easier to scroll through in Excel or VS Code.
     if save_dir is not None:
-        save_dir.mkdir(parents=True, exist_ok=True)                                 # Create the folder if missing.
+        save_dir.mkdir(parents=True, exist_ok=True)                                 # Create the folder if it is missing.
         df.head(rows).to_csv(save_dir / f"{name}_head.csv", index=False)            # Ex: output/preview/requests_head.csv
         df.tail(rows).to_csv(save_dir / f"{name}_tail.csv", index=False)            # Ex: output/preview/requests_tail.csv
         print(f"\nSaved: {save_dir / f'{name}_head.csv'} and {save_dir / f'{name}_tail.csv'}")
@@ -100,25 +100,25 @@ def main() -> None:
 
     parser.add_argument("--data-dir", type=Path, default=Path("data/processed"), help="Folder with the 3 Parquet files.")
     parser.add_argument("--rows", type=int, default=200, help="Number of rows to show at the head and at the tail.")
-    # choices=[...] -> argparse rejects any other value. *TABLES.keys() expands to "satellites", "requests", "opportunities".
+    # With choices=[...], argparse rejects any other value. *TABLES.keys() expands to "satellites", "requests", "opportunities".
     parser.add_argument("--file", choices=["all", *TABLES.keys()], default="all", help="Which table to preview.")
     parser.add_argument("--save-csv", action="store_true", help="Also save head/tail as CSV in output/preview/.")
 
-    args = parser.parse_args()      # Ex: args.rows = 200, args.file = "all". ("-" in option names becomes "_".)
+    args = parser.parse_args()      # Ex: args.rows = 200, args.file = "all". A "-" in an option name becomes "_".
 
     configure_pandas()
 
-    # Tables to show: all of them, or only the one passed with --file.
+    # Tables to show: all of them, or the one passed with --file.
     names = list(TABLES.keys()) if args.file == "all" else [args.file]
 
-    # Where to save the CSV files: output/preview/ if --save-csv is given, otherwise None (no export).
+    # CSV files go to output/preview/ when --save-csv is given. None means no export.
     save_dir = Path("output/preview") if args.save_csv else None
 
     # ---- 2. Show each table ----
     for name in names:
         path = args.data_dir / TABLES[name]         # Ex: data/processed/requests.parquet
 
-        # Missing file -> print a hint and move on to the next table (no crash).
+        # A missing file is reported, and the loop moves on to the next table.
         if not path.exists():
             print(f"\n[skip] {path} not found. Run `python -m src.generate_dataset` first.")
             continue
@@ -126,6 +126,6 @@ def main() -> None:
         preview_table(name=name, df=pd.read_parquet(path), rows=args.rows, save_dir=save_dir,)
 
 
-# Runs main() only when the file is executed directly (python -m src.preview_dataset), not when imported.
+# main() runs when the file is executed directly (python -m src.preview_dataset). It does not run on import.
 if __name__ == "__main__":
     main()

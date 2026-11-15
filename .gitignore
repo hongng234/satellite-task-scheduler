@@ -8,6 +8,7 @@ __pycache__/
 docs/
 data/
 notebooks/
+Claude outputs/
 *.parquet
 *.csv
 *.json

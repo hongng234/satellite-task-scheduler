@@ -2,7 +2,7 @@
 # Satellite Task Scheduler
 
 Schedules Earth-observation captures for a satellite constellation over a 48 h horizon.
-It compares an exact **OR-Tools CP-SAT** model against two **greedy heuristics** on simulated
+It compares an exact OR-Tools CP-SAT model against two greedy heuristics on simulated
 datasets from 250 to 66k observation opportunities.
 
 ## Results
@@ -11,16 +11,17 @@ Benchmark: 30 s CP-SAT time limit, 8 threads. Every schedule passed the independ
 
 | Scenario | Opportunities | CP-SAT | Greedy | Improved greedy | CP-SAT vs greedy |
 |---|---|---|---|---|---|
-| tiny | 252 | 2 941.52 · **OPTIMAL** (0.04 s) | 2 941.52 | 2 941.52 | 0% |
-| small | 1 982 | 14 143.54 · 200/200 requests · **OPTIMAL** (0.48 s) | 14 055.89 · 196 | 14 055.89 · 196 | +0.62% |
+| tiny | 252 | 2 941.52 · OPTIMAL (0.04 s) | 2 941.52 | 2 941.52 | 0% |
+| small | 1 982 | 14 143.54 · 200/200 requests · OPTIMAL (0.48 s) | 14 055.89 · 196 | 14 055.89 · 196 | +0.62% |
 | medium | 9 964 | 36 769.41 · 467 requests | 36 579.48 · 456 | 36 579.48 · 456 | +0.52% |
 | large | 65 795 | 106 174.31 · 762 requests | 106 164.25 · 761 | 106 075.82 · 761 | +0.01% |
-| large, no warm start | 65 795 | 61 552.92 | 106 164.25 | 106 075.82 | **−42%** |
+| large, no warm start | 65 795 | 61 552.92 | 106 164.25 | 106 075.82 | −42% |
 
-- **Small instances:** CP-SAT proves the optimal schedule in under 0.5 s and serves more requests than greedy.
-- **Large instances:** without a warm start, CP-SAT spends its time limit in presolve and search and ends 42% below greedy.
-  Warm-starting it from the greedy schedule (a complete solution hint) guarantees CP-SAT ≥ greedy.
-- A detailed explanation of the benchmark, in Vietnamese and English, is in [docs/scheduler_comparison.md](docs/scheduler_comparison.md).
+- On small instances, CP-SAT proves the optimal schedule in under 0.5 s and serves more requests than greedy.
+- On large instances without a warm start, CP-SAT uses up its time limit in presolve and search and ends 42% below greedy.
+  Warm-started from the greedy schedule (a complete solution hint), it never ends below greedy.
+- The medium and large CP-SAT rows stop at the time limit (`FEASIBLE`), so they vary a little between runs.
+  Later reruns gave 36 766.02 to 36 777.93 on medium, and 61 478.11 to 62 082.39 for large without warm start.
 
 ## Quick start
 
@@ -33,10 +34,11 @@ python -m src.preview_dataset --rows 200      # inspect the first/last rows of e
 python -m src.run_experiment                  # 3 algorithms -> output/
 python -m src.benchmark --generate-only       # only the 4 benchmark datasets -> data/benchmark/<scenario>/
 python -m src.benchmark                       # tiny/small/medium/large -> output/benchmark_results.csv
-python -m pytest                              # 35 tests
+python -m pytest                              # 62 tests
 ```
 
 `make dataset | datasets | run | preview | benchmark | test` run the same commands (`make help` lists all).
+`make lint` and `make typecheck` run ruff and mypy, with their settings in `pyproject.toml`.
 
 ## Project structure
 
@@ -50,7 +52,6 @@ src/
   benchmark.py          multi-size benchmark + independent constraint checker
   preview_dataset.py    head/tail viewer for the Parquet files
 tests/                  pytest suite (unit, regression and end-to-end tests)
-docs/                   benchmark explanation (VI + EN)
 ```
 
 ## Model
@@ -82,29 +83,36 @@ Constraints:
 ```
 
 Simplifications: battery and memory are budgets for the whole horizon (no recharge, no downlink), and the
-orbit geometry is simulated. In CP-SAT, constraint 3 is an `AddNoOverlap` over **optional** intervals of
-length `T_i + δ`. All numbers are scaled to integers (value ×100, energy ×10, data ×100), with conservative
-rounding (consumption rounded up, capacity rounded down).
+orbit geometry is simulated. In CP-SAT, constraint 3 is an `AddNoOverlap` over optional intervals of
+length `T_i + δ`. All numbers are scaled to integers (value ×100, energy ×10, data ×100). Consumption is
+rounded up and capacity rounded down, so the integer model never allows more than the real data.
+
+Because durations are rounded up to whole seconds, a CP-SAT capture can be slightly longer than the request
+needs (an 8.2 s capture is reported as 9 s). The greedy schedulers report the exact float duration.
+
+Before solving, every scheduler checks its input tables (`validate_tables` in `src/models.py`): ids must exist,
+the slew buffer must be ≥ 0, durations must be > 0, and an opportunity's duration must equal its request's.
 
 ## Testing
 
-`python -m pytest` runs 35 tests in about 1 s:
+`python -m pytest` runs 62 tests in about 2 s:
 
 | File | What it covers |
 |---|---|
 | `tests/test_generate_dataset.py` | Reproducibility (same seed → identical tables), deterministic ids, windows inside the request range, orbit-period spacing, empty-data edge case |
 | `tests/test_greedy.py` | Unit tests of the start-time rule of both greedy variants; battery, one-capture-per-request and input validation |
-| `tests/test_cp_sat.py` | **Regression tests** for fixed bugs (non-optional intervals → infeasible, too-short window → `KeyError`, ignored slew buffer); optimality on a small instance; CP-SAT ≥ greedy with and without the hint |
-| `tests/test_validation.py` | End-to-end: all 3 schedulers produce valid schedules; the constraint checker detects injected violations; Pydantic model validation |
+| `tests/test_cp_sat.py` | Regression tests for fixed bugs (non-optional intervals → infeasible, too-short window → `KeyError`, ignored slew buffer, orbit block rounding); optimality on a small instance; CP-SAT ≥ greedy with and without the hint |
+| `tests/test_validation.py` | End-to-end: all 3 schedulers produce valid schedules; the constraint checker detects injected mistakes (duplicate request, capture outside its window or too short, wrong ids, value or priority, wrong total, infeasible opportunity, unknown id); input checks of every scheduler; Pydantic model validation |
 
 ## Validation
 
-- **Independent constraint checker:** `src/benchmark.py::check_schedule` re-checks every schedule against
-  all constraints, using the original float data rather than the solver's integer model. The benchmark
-  reports it in the `valid` column.
-- **Reproducible data:** fixed `--start_time`, seeded RNGs and sequential ids. Two runs with the same seed
+- Independent constraint checker: `src/benchmark.py::check_schedule` checks every schedule against
+  the constraints, using the original float data and not the solver's integer model. It also checks that
+  each capture matches its opportunity and request (ids, duration, value, priority) and that the reported
+  total is the sum of the values. The benchmark reports it in the `valid` column.
+- Reproducible data: fixed `--start_time`, seeded RNGs and sequential ids. Two runs with the same seed
   produce byte-identical Parquet files.
-- **Cross-check between algorithms:** on instances solved to `OPTIMAL`, CP-SAT must be ≥ both greedy
+- Cross-check between algorithms: on instances solved to `OPTIMAL`, CP-SAT must be ≥ both greedy
   variants. The test suite asserts this.
 
 ## Debugging notes
@@ -118,11 +126,13 @@ Issues found and how they were diagnosed:
 | CP-SAT returned objective 0, or 42% below greedy, on 66k opportunities | CP-SAT search log (`log_search_progress`): about 15 s of presolve, then no good solution before the time limit | Greedy warm start via `model.add_hint` |
 | Hint ignored | The log said `solution hint is incomplete: 196688 out of 295032`. Fixing variables to the hint (`fix_variables_to_their_hinted_value`) proved the hint itself was feasible | Hint every variable (`x`, `start`, `end`) |
 | Hint slightly infeasible | Greedy uses float durations, CP-SAT uses rounded-up integers | Re-place greedy captures on the integer grid before hinting |
+| CP-SAT and the checker could disagree on the orbit block | CP-SAT rounded the time offset down to whole seconds before dividing by a non-integer orbit period; a script comparing both formulas found 19 of 9 964 opportunities in a different block on medium | CP-SAT reuses the greedy `_orbit_block` function |
+| Checker accepted wrong schedules | Hand-made schedules with a 0 s capture, a wrong request id or an inflated value were reported as valid, and an unknown opportunity id crashed it | More checks in `check_schedule`, one test per injected mistake |
 
 ## Development process
 
 The project idea and the backbone code (dataset generator, Pydantic models, CP-SAT model and baseline greedy) are my own.
-I then used **Claude Code** (an AI coding agent) to fix the code, write tests, audit the schedulers and update the project.
+I then used Claude Code (an AI coding agent) to fix the code, write tests, audit the schedulers and update the project.
 
 When CP-SAT struggled on large sets of opportunities (objective 0, or 42% below greedy), Claude suggested warm-starting it
 with a solution hint built from the greedy schedule. I decided to adopt it and confirmed it with the benchmark:

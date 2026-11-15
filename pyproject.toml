@@ -1,0 +1,23 @@
+# Settings for the code-quality tools (`make lint`, `make typecheck`).
+# The project is run with `python -m src.<module>` and is not installed as a package.
+
+[tool.ruff.lint]
+ignore = [
+    "I001",   # Import order: imports carry aligned end-of-line comments, and sorting would break them up.
+    "C408",   # dict(a=1) is kept on purpose: keyword arguments read better than {"a": 1} in the tests.
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Commented by hand by the author and left as written.
+"src/generate_dataset.py" = ["UP017"]
+
+[tool.mypy]
+# src/ has no __init__.py. Without this, mypy finds each file twice ("generate_dataset" and "src.generate_dataset").
+explicit_package_bases = true
+# OR-Tools ships no type information.
+ignore_missing_imports = true
+
+# Commented by hand by the author and left as written. `rows = []` has no type annotation there.
+[[tool.mypy.overrides]]
+module = "src.generate_dataset"
+disable_error_code = ["var-annotated"]
